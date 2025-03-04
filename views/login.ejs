@@ -1,0 +1,27 @@
+<%- include('layout', { body: `
+<div class="container">
+    <div class="login-container">
+        <h2 class="text-center mb-4">Login Administrativo</h2>
+        
+        <% if (message && message.length > 0) { %>
+            <div class="alert alert-danger">
+                <%= message %>
+            </div>
+        <% } %>
+
+        <form action="/login" method="POST">
+            <div class="mb-3">
+                <label for="username" class="form-label">Usuário</label>
+                <input type="text" class="form-control" id="username" name="username" required>
+            </div>
+            
+            <div class="mb-3">
+                <label for="password" class="form-label">Senha</label>
+                <input type="password" class="form-control" id="password" name="password" required>
+            </div>
+            
+            <button type="submit" class="btn btn-primary w-100">Entrar</button>
+        </form>
+    </div>
+</div>
+` }) %>
