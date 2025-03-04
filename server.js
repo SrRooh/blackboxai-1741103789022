@@ -1,18 +1,45 @@
 require('dotenv').config();
 const express = require('express');
-const mongoose = require('mongoose');
 const session = require('express-session');
-const MongoStore = require('connect-mongo');
 const flash = require('connect-flash');
 const bcrypt = require('bcryptjs');
 const path = require('path');
-
+const sqlite3 = require('sqlite3').verbose();
 const app = express();
 
-// MongoDB Connection
-mongoose.connect('mongodb://localhost:27017/linktree', {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
+// Create SQLite database
+const db = new sqlite3.Database('links.db', (err) => {
+    if (err) {
+        console.error(err.message);
+    }
+    console.log('Connected to the links database.');
+});
+
+// Create tables
+db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        url TEXT NOT NULL,
+        order_num INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1
+    )`);
+
+    // Create default admin user if not exists
+    const checkAdmin = db.prepare('SELECT * FROM users WHERE username = ?');
+    checkAdmin.get('admin', async (err, row) => {
+        if (!row) {
+            const hashedPassword = await bcrypt.hash('admin123', 10);
+            db.run('INSERT INTO users (username, password) VALUES (?, ?)', ['admin', hashedPassword]);
+        }
+    });
+    checkAdmin.finalize();
 });
 
 // Middleware
@@ -23,30 +50,13 @@ app.set('view engine', 'ejs');
 
 // Session configuration
 app.use(session({
-    secret: 'your-secret-key',
+    secret: process.env.SESSION_SECRET || 'your-secret-key',
     resave: false,
     saveUninitialized: false,
-    store: MongoStore.create({ mongoUrl: 'mongodb://localhost:27017/linktree' }),
     cookie: { maxAge: 1000 * 60 * 60 * 24 } // 24 hours
 }));
 
 app.use(flash());
-
-// Models
-const userSchema = new mongoose.Schema({
-    username: { type: String, required: true, unique: true },
-    password: { type: String, required: true }
-});
-
-const linkSchema = new mongoose.Schema({
-    title: { type: String, required: true },
-    url: { type: String, required: true },
-    order: { type: Number, default: 0 },
-    active: { type: Boolean, default: true }
-});
-
-const User = mongoose.model('User', userSchema);
-const Link = mongoose.model('Link', linkSchema);
 
 // Authentication middleware
 const isAuthenticated = (req, res, next) => {
@@ -57,13 +67,13 @@ const isAuthenticated = (req, res, next) => {
 };
 
 // Routes
-app.get('/', async (req, res) => {
-    try {
-        const links = await Link.find({ active: true }).sort('order');
+app.get('/', (req, res) => {
+    db.all('SELECT * FROM links WHERE active = 1 ORDER BY order_num', [], (err, links) => {
+        if (err) {
+            return res.status(500).send('Server Error');
+        }
         res.render('home', { links });
-    } catch (error) {
-        res.status(500).send('Server Error');
-    }
+    });
 });
 
 app.get('/login', (req, res) => {
@@ -72,8 +82,12 @@ app.get('/login', (req, res) => {
 
 app.post('/login', async (req, res) => {
     const { username, password } = req.body;
-    try {
-        const user = await User.findOne({ username });
+    
+    db.get('SELECT * FROM users WHERE username = ?', [username], async (err, user) => {
+        if (err) {
+            return res.status(500).send('Server Error');
+        }
+        
         if (user && await bcrypt.compare(password, user.password)) {
             req.session.isAuthenticated = true;
             res.redirect('/admin');
@@ -81,9 +95,7 @@ app.post('/login', async (req, res) => {
             req.flash('error', 'Invalid username or password');
             res.redirect('/login');
         }
-    } catch (error) {
-        res.status(500).send('Server Error');
-    }
+    });
 });
 
 app.get('/logout', (req, res) => {
@@ -91,84 +103,73 @@ app.get('/logout', (req, res) => {
     res.redirect('/');
 });
 
-app.get('/admin', isAuthenticated, async (req, res) => {
-    try {
-        const links = await Link.find().sort('order');
+app.get('/admin', isAuthenticated, (req, res) => {
+    db.all('SELECT * FROM links ORDER BY order_num', [], (err, links) => {
+        if (err) {
+            return res.status(500).send('Server Error');
+        }
         res.render('admin', { links });
-    } catch (error) {
-        res.status(500).send('Server Error');
-    }
+    });
 });
 
 app.post('/admin/links', isAuthenticated, async (req, res) => {
-    try {
-        const { title, url } = req.body;
-        const count = await Link.countDocuments();
-        await Link.create({ title, url, order: count });
-        res.redirect('/admin');
-    } catch (error) {
-        res.status(500).send('Server Error');
-    }
+    const { title, url } = req.body;
+    
+    db.get('SELECT MAX(order_num) as maxOrder FROM links', [], (err, row) => {
+        if (err) {
+            return res.status(500).send('Server Error');
+        }
+        
+        const newOrder = (row.maxOrder || 0) + 1;
+        db.run('INSERT INTO links (title, url, order_num) VALUES (?, ?, ?)',
+            [title, url, newOrder],
+            (err) => {
+                if (err) {
+                    return res.status(500).send('Server Error');
+                }
+                res.redirect('/admin');
+            }
+        );
+    });
 });
 
-app.put('/admin/links/:id', isAuthenticated, async (req, res) => {
-    try {
-        const { title, url, active } = req.body;
-        await Link.findByIdAndUpdate(req.params.id, {
-            title,
-            url,
-            active: active === 'true'
-        });
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: 'Server Error' });
-    }
+app.put('/admin/links/:id', isAuthenticated, (req, res) => {
+    const { title, url, active } = req.body;
+    
+    db.run('UPDATE links SET title = ?, url = ?, active = ? WHERE id = ?',
+        [title, url, active === 'true' ? 1 : 0, req.params.id],
+        (err) => {
+            if (err) {
+                return res.status(500).json({ error: 'Server Error' });
+            }
+            res.json({ success: true });
+        }
+    );
 });
 
-app.delete('/admin/links/:id', isAuthenticated, async (req, res) => {
-    try {
-        await Link.findByIdAndDelete(req.params.id);
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: 'Server Error' });
-    }
-});
-
-app.post('/admin/links/reorder', isAuthenticated, async (req, res) => {
-    try {
-        const { orders } = req.body;
-        for (const [id, order] of Object.entries(orders)) {
-            await Link.findByIdAndUpdate(id, { order });
+app.delete('/admin/links/:id', isAuthenticated, (req, res) => {
+    db.run('DELETE FROM links WHERE id = ?', [req.params.id], (err) => {
+        if (err) {
+            return res.status(500).json({ error: 'Server Error' });
         }
         res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: 'Server Error' });
-    }
+    });
 });
 
-// Initialize admin user
-const initializeAdmin = async () => {
-    try {
-        const adminExists = await User.findOne({ username: 'admin' });
-        if (!adminExists) {
-            const hashedPassword = await bcrypt.hash('admin123', 10);
-            await User.create({
-                username: 'admin',
-                password: hashedPassword
-            });
-            console.log('Admin user created');
-        }
-    } catch (error) {
-        console.error('Error creating admin user:', error);
+app.post('/admin/links/reorder', isAuthenticated, (req, res) => {
+    const { orders } = req.body;
+    
+    const stmt = db.prepare('UPDATE links SET order_num = ? WHERE id = ?');
+    for (const [id, order] of Object.entries(orders)) {
+        stmt.run([order, id]);
     }
-};
+    stmt.finalize();
+    
+    res.json({ success: true });
+});
 
 // Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, async () => {
+const PORT = process.env.PORT || 3001; // Changed to 3001
+app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
-    await mongoose.connection.once('open', () => {
-        console.log('Connected to MongoDB');
-        initializeAdmin();
-    });
 });
