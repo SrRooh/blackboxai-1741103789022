@@ -1,0 +1,152 @@
+<%- include('layout', { body: `
+<div class="container">
+    <div class="admin-header">
+        <h2>Painel Administrativo</h2>
+        <a href="/logout" class="btn btn-outline-danger">Sair</a>
+    </div>
+
+    <!-- Add New Link Form -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">Adicionar Novo Link</h5>
+        </div>
+        <div class="card-body">
+            <form action="/admin/links" method="POST" id="addLinkForm">
+                <div class="row">
+                    <div class="col-md-5">
+                        <input type="text" class="form-control" name="title" placeholder="Título do Link" required>
+                    </div>
+                    <div class="col-md-5">
+                        <input type="url" class="form-control" name="url" placeholder="URL" required>
+                    </div>
+                    <div class="col-md-2">
+                        <button type="submit" class="btn btn-primary w-100">Adicionar</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Links List -->
+    <div class="card">
+        <div class="card-header">
+            <h5 class="mb-0">Gerenciar Links</h5>
+        </div>
+        <div class="card-body">
+            <div class="links-list" id="sortableLinks">
+                <% links.forEach(function(link) { %>
+                    <div class="link-item" data-id="<%= link._id %>">
+                        <div class="link-drag-handle">
+                            <i class="fas fa-grip-vertical"></i>
+                        </div>
+                        <div class="link-content">
+                            <form class="edit-link-form" data-id="<%= link._id %>">
+                                <div class="row align-items-center">
+                                    <div class="col-md-4">
+                                        <input type="text" class="form-control" name="title" value="<%= link.title %>" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <input type="url" class="form-control" name="url" value="<%= link.url %>" required>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <div class="form-check">
+                                            <input type="checkbox" class="form-check-input" name="active" 
+                                                   id="active-<%= link._id %>" 
+                                                   <%= link.active ? 'checked' : '' %>>
+                                            <label class="form-check-label" for="active-<%= link._id %>">Ativo</label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <div class="btn-group w-100">
+                                            <button type="submit" class="btn btn-sm btn-success">
+                                                <i class="fas fa-save"></i>
+                                            </button>
+                                            <button type="button" class="btn btn-sm btn-danger delete-link" data-id="<%= link._id %>">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                <% }); %>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialize Sortable
+    const sortable = new Sortable(document.getElementById('sortableLinks'), {
+        handle: '.link-drag-handle',
+        animation: 150,
+        onEnd: function() {
+            const items = document.querySelectorAll('.link-item');
+            const orders = {};
+            items.forEach((item, index) => {
+                orders[item.dataset.id] = index;
+            });
+
+            fetch('/admin/links/reorder', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ orders }),
+            });
+        }
+    });
+
+    // Handle link editing
+    document.querySelectorAll('.edit-link-form').forEach(form => {
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const id = form.dataset.id;
+            const formData = new FormData(form);
+            
+            try {
+                const response = await fetch(\`/admin/links/\${id}\`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        title: formData.get('title'),
+                        url: formData.get('url'),
+                        active: formData.get('active') ? true : false
+                    }),
+                });
+                
+                if (response.ok) {
+                    alert('Link atualizado com sucesso!');
+                }
+            } catch (error) {
+                alert('Erro ao atualizar o link');
+            }
+        });
+    });
+
+    // Handle link deletion
+    document.querySelectorAll('.delete-link').forEach(button => {
+        button.addEventListener('click', async () => {
+            if (confirm('Tem certeza que deseja excluir este link?')) {
+                const id = button.dataset.id;
+                try {
+                    const response = await fetch(\`/admin/links/\${id}\`, {
+                        method: 'DELETE',
+                    });
+                    
+                    if (response.ok) {
+                        button.closest('.link-item').remove();
+                    }
+                } catch (error) {
+                    alert('Erro ao excluir o link');
+                }
+            }
+        });
+    });
+});
+</script>
+` }) %>
